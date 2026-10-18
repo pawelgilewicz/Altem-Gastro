@@ -1,2 +1,1 @@
-# altem-gastro
 # Altem-Gastro
