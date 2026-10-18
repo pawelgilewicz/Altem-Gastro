@@ -1,20 +1,18 @@
 import React, { createContext, useContext, useReducer, useMemo } from 'react';
 
-// Koszyk trzyma tylko identyfikatory + ilości. Cena w snapshotcie służy wyłącznie do podglądu;
-// ostateczną wycenę zwraca CORE (POST /cart/validate).
+// Koszyk lokalny: tylko identyfikatory, ilości i podgląd. Cena końcowa = wyłącznie CORE (/cart/validate).
 function reducer(lines, a) {
   switch (a.type) {
     case 'add': {
-      const key = a.variantId;
+      const key = a.variantId + '|' + [...a.modifiers].sort().join(',');
       const hit = lines.find((l) => l.key === key);
-      return hit ? lines.map((l) => (l.key === key ? { ...l, qty: l.qty + a.qty } : l)) : [...lines, { key, productId: a.productId, variantId: a.variantId, name: a.name, variantName: a.variantName, priceMinor: a.priceMinor, qty: a.qty }];
+      return hit ? lines.map((l) => (l.key === key ? { ...l, qty: l.qty + a.qty } : l)) : [...lines, { ...a, key }];
     }
     case 'qty': return a.qty < 1 ? lines.filter((l) => l.key !== a.key) : lines.map((l) => (l.key === a.key ? { ...l, qty: a.qty } : l));
     case 'clear': return [];
     default: return lines;
   }
 }
-
 const Ctx = createContext(null);
 export const CartProvider = ({ children }) => {
   const [lines, dispatch] = useReducer(reducer, []);

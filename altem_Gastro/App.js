@@ -1,15 +1,17 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, Image, FlatList, ScrollView, Pressable, Modal, TextInput, Alert, ActivityIndicator, StyleSheet, StatusBar } from 'react-native';
+import { View, Text, Image, FlatList, ScrollView, Pressable, TextInput, Alert, ActivityIndicator, Linking, StatusBar, StyleSheet } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFonts, Anton_400Regular } from '@expo-google-fonts/anton';
-import { BRAND } from './src/config';
-import { getMenu, validateCart, createOrder, trackOrder } from './src/api';
+import { useFonts } from '@expo-google-fonts/anton';
+import { TENANT } from './src/config';
+import { ThemeProvider, useTheme } from './src/theme';
+import { getVenue, getVenueStatus, getMenu, validateCart, createOrder, trackOrder } from './src/api';
 import { CartProvider, useCart } from './src/cart';
+import { track, pick } from './src/services';
+import { AuthProvider, useAuth, AuthForm } from './src/auth';
+import { ConsentProvider, ConsentSheet, useConsent } from './src/consent';
+import { useS, zl, Button, CategoryChip, Stepper, Sheet, Option, ModifierGroup, StatusTimeline, BottomNav } from './src/ui';
 
-const C = BRAND.colors;
-const H = 'Anton_400Regular';
-const zl = (minor) => `${(minor / 100).toFixed(2).replace('.', ',')} zł`;
-const pick = (o, ...keys) => keys.map((k) => k.split('.').reduce((a, p) => (a == null ? a : a[p]), o)).find((v) => v != null);
+const M = TENANT.modules;
 
 function useMenu() {
   const [st, setSt] = useState({ status: 'loading' });
@@ -21,234 +23,259 @@ function useMenu() {
   useEffect(load, [load]);
   return [st, load];
 }
+function useVenue() {
+  const [v, setV] = useState({ status: 'loading' });
+  const load = useCallback(() => {
+    setV({ status: 'loading' });
+    Promise.allSettled([getVenue(), getVenueStatus()]).then(([a, b]) => (a.status === 'fulfilled'
+      ? setV({ status: 'ready', venue: a.value, st: b.status === 'fulfilled' ? b.value : null }) // status opcjonalny
+      : setV({ status: 'error', message: a.reason.message })));
+  }, []);
+  useEffect(load, [load]);
+  return [v, load];
+}
 
-const Retry = ({ message, onRetry }) => (
-  <View style={s.center}><Text style={s.h2}>Coś poszło nie tak</Text><Text style={[s.muted, { textAlign: 'center', marginHorizontal: 24 }]}>{message}</Text>
-    <Pressable style={[s.cta, { flex: 0, paddingHorizontal: 28, marginTop: 16 }]} onPress={onRetry}><Text style={s.ctaTxt}>Spróbuj ponownie</Text></Pressable></View>
-);
+const Retry = ({ message, onRetry }) => { const s = useS(); return <View style={s.center}><Text style={s.h2}>Coś poszło nie tak</Text><Text style={[s.muted, { textAlign: 'center' }]}>{message}</Text><Button title="Spróbuj ponownie" onPress={onRetry} style={{ flex: 0, paddingHorizontal: 28, marginTop: 12 }} /></View>; };
 
-function ProductSheet({ product, onClose }) {
-  const { dispatch } = useCart();
-  const variants = [...product.variants].filter((v) => v.active).sort((a, b) => a.sort_order - b.sort_order);
-  const [vid, setVid] = useState(variants[0] && variants[0].id);
-  const [qty, setQty] = useState(1);
-  const v = variants.find((x) => x.id === vid);
-  const add = () => {
-    const go = () => { dispatch({ type: 'add', productId: product.id, variantId: v.id, name: product.name, variantName: variants.length > 1 ? v.name : '', priceMinor: v.price_minor, qty }); onClose(); };
-    if (product.tags.includes('18+')) Alert.alert('Produkt 18+', 'Potwierdzasz, że masz ukończone 18 lat?', [{ text: 'Anuluj', style: 'cancel' }, { text: 'Mam 18 lat', onPress: go }]);
-    else go();
-  };
+function HomeScreen({ go, setChannel }) {
+  const s = useS(); const t = useTheme(); const [v, reload] = useVenue();
+  const open = v.status === 'ready' ? (pick(v.st, 'open_now', 'is_open', 'open') ?? pick(v.venue, 'open_now', 'is_open')) : null; // ZAŁOŻONE nazwy pól
+  const start = (ch) => { setChannel(ch); track('home_cta_click', { channel: ch }); go('menu'); };
   return (
-    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
-      <Pressable style={s.backdrop} onPress={onClose} />
-      <View style={s.sheet}>
-        <Text style={s.h2}>{product.name}</Text>
-        {!!product.description && <Text style={s.muted}>{product.description}</Text>}
-        {variants.length > 1 && <Text style={s.label}>Wybierz wariant</Text>}
-        {variants.length > 1 && variants.map((x) => (
-          <Pressable key={x.id} onPress={() => setVid(x.id)} style={[s.opt, x.id === vid && { borderColor: C.accent }]}>
-            <View style={[s.dot, x.id === vid && { backgroundColor: C.accent }]} /><Text style={s.optTxt}>{x.name}</Text><Text style={s.muted}>{zl(x.price_minor)}</Text>
-          </Pressable>
-        ))}
-        <View style={s.sheetBar}>
-          <Stepper qty={qty} onChange={(q) => setQty(Math.max(1, q))} />
-          <Pressable style={s.cta} onPress={add}><Text style={s.ctaTxt}>Dodaj · {zl(v.price_minor * qty)}</Text></Pressable>
-        </View>
+    <ScrollView>
+      <View style={{ margin: 16, borderRadius: t.radius.lg, overflow: 'hidden', padding: 20, minHeight: 200, justifyContent: 'flex-end', backgroundColor: t.colors.surface }}>
+        <Image source={{ uri: TENANT.assets.hero }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)' }]} />
+        <Text style={[s.h1, { fontSize: 44, color: t.colors.onPrimary }]}>{pick(v.venue, 'name', 'venue.name') || TENANT.name}</Text>
+        {open != null && <Text style={{ color: open ? t.colors.primary : t.colors.secondary, fontWeight: '700' }}>{open ? 'Otwarte' : 'Zamknięte'}</Text>}
       </View>
-    </Modal>
+      {v.status === 'error' && <Pressable onPress={reload}><Text style={[s.muted, { marginHorizontal: 16 }]}>Nie pobrano statusu lokalu. Dotknij, aby ponowić.</Text></Pressable>}
+      <View style={{ padding: 16, gap: 10 }}>
+        {M.delivery && <Button title="Dostawa" onPress={() => start('delivery')} style={{ flex: 0 }} />}
+        {M.pickup && <Button title="Odbiór osobisty" onPress={() => start('pickup')} ghost style={{ flex: 0 }} />}
+      </View>
+    </ScrollView>
   );
 }
 
-const Stepper = ({ qty, onChange }) => (
-  <View style={s.qty}>
-    <Pressable onPress={() => onChange(qty - 1)} style={s.qBtn}><Text style={s.qTxt}>−</Text></Pressable>
-    <Text style={s.qNum}>{qty}</Text>
-    <Pressable onPress={() => onChange(qty + 1)} style={s.qBtn}><Text style={s.qTxt}>+</Text></Pressable>
-  </View>
-);
+function ProductSheet({ product, onClose }) {
+  const s = useS(); const { dispatch } = useCart();
+  const variants = product.variants.filter((v) => v.active).sort((a, b) => a.sort_order - b.sort_order);
+  const groups = product.option_groups || [];
+  const [vid, setVid] = useState(variants[0] && variants[0].id);
+  const [qty, setQty] = useState(1);
+  const [sel, setSel] = useState({});
+  useEffect(() => track('product_view', { product_id: product.id }), [product.id]);
+  const v = variants.find((x) => x.id === vid);
+  const need = (g) => g.min_select || (g.required ? 1 : 0);
+  const toggle = (g, oid) => setSel((p) => {
+    const cur = p[g.id] || [];
+    if (cur.includes(oid)) return { ...p, [g.id]: cur.filter((x) => x !== oid) };
+    if (g.max_select === 1) return { ...p, [g.id]: [oid] };
+    return g.max_select && cur.length >= g.max_select ? p : { ...p, [g.id]: [...cur, oid] };
+  });
+  const picked = groups.flatMap((g) => (sel[g.id] || []).map((id) => g.options.find((o) => o.id === id)));
+  const unit = v.price_minor + picked.reduce((a, o) => a + (o.price_minor || 0), 0);
+  const ok = groups.every((g) => (sel[g.id] || []).length >= need(g));
+  const add = () => {
+    const go = () => { dispatch({ type: 'add', productId: product.id, variantId: v.id, name: product.name, variantName: variants.length > 1 ? v.name : '', modifiers: picked.map((o) => o.id), modNames: picked.map((o) => o.name), priceMinor: unit, qty }); track('add_to_cart', { product_id: product.id }); onClose(); };
+    if (product.tags.includes('18+')) Alert.alert('Produkt 18+', 'Potwierdzasz, że masz ukończone 18 lat?', [{ text: 'Anuluj', style: 'cancel' }, { text: 'Mam 18 lat', onPress: go }]); else go();
+  };
+  return (
+    <Sheet onClose={onClose}>
+      <ScrollView>
+        <Text style={s.h2}>{product.name}</Text>
+        {!!product.description && <Text style={s.muted}>{product.description}</Text>}
+        {variants.length > 1 && <Text style={s.label}>Wybierz wariant</Text>}
+        {variants.length > 1 && variants.map((x) => <Option key={x.id} on={x.id === vid} text={x.name} price={0} onPress={() => setVid(x.id)} />)}
+        {groups.map((g) => <ModifierGroup key={g.id} group={g} selected={sel[g.id] || []} onToggle={toggle} />)}
+      </ScrollView>
+      <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center', paddingTop: 16 }}>
+        <Stepper qty={qty} onChange={(q) => setQty(Math.max(1, q))} />
+        <Button title={`Dodaj · ${zl(unit * qty)}`} onPress={add} disabled={!ok} />
+      </View>
+    </Sheet>
+  );
+}
 
 function MenuScreen({ onPick }) {
-  const [menu, reload] = useMenu();
-  const [cat, setCat] = useState(null);
-  if (menu.status === 'loading') return <View style={s.center}><ActivityIndicator color={C.accent} size="large" /></View>;
+  const s = useS(); const t = useTheme(); const [menu, reload] = useMenu();
+  const [cat, setCat] = useState(null); const [query, setQuery] = useState('');
+  useEffect(() => track('menu_view'), []);
+  if (menu.status === 'loading') return <View style={s.center}><ActivityIndicator color={t.colors.primary} size="large" /></View>;
   if (menu.status === 'error') return <Retry message={menu.message} onRetry={reload} />;
-  const active = cat || menu.categories[0].id;
-  const data = menu.products.filter((p) => p.category_id === active);
+  const active = cat || menu.categories[0].id; const qn = query.trim().toLowerCase();
+  const data = qn ? menu.products.filter((p) => (p.name + ' ' + p.description).toLowerCase().includes(qn)) : menu.products.filter((p) => p.category_id === active);
   const header = (
     <View>
-      <View style={s.hero}>
-        <Image source={{ uri: BRAND.hero }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-        <View style={s.heroShade} />
-        <Text style={s.heroSub}>{BRAND.city}</Text>
-        <Text style={s.heroTitle}>ALE YEAH!</Text>
-      </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>
-        {menu.categories.map((c) => (
-          <Pressable key={c.id} onPress={() => setCat(c.id)} style={[s.chip, active === c.id && s.chipOn]}><Text style={[s.chipTxt, active === c.id && { color: C.bg }]}>{c.name}</Text></Pressable>
-        ))}
-      </ScrollView>
+      <TextInput style={[s.input, { marginHorizontal: 16 }]} placeholder="Szukaj w menu" placeholderTextColor={t.colors.muted} value={query} onChangeText={setQuery} />
+      {!qn && <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ padding: 16, gap: 8 }}>
+        {menu.categories.map((c) => <CategoryChip key={c.id} label={c.name} on={active === c.id} onPress={() => setCat(c.id)} />)}
+      </ScrollView>}
     </View>
   );
   return (
-    <FlatList data={data} keyExtractor={(p) => p.id} ListHeaderComponent={header} contentContainerStyle={{ paddingBottom: 24 }}
+    <FlatList data={data} keyExtractor={(p) => p.id} ListHeaderComponent={header} contentContainerStyle={{ paddingBottom: 90 }}
+      ListEmptyComponent={<Text style={[s.muted, { textAlign: 'center', marginTop: 24 }]}>Brak wyników dla „{query}".</Text>}
       renderItem={({ item }) => {
         const from = Math.min(...item.variants.filter((v) => v.active).map((v) => v.price_minor));
         return (
           <Pressable style={s.card} onPress={() => onPick(item)}>
-            <View style={[s.thumb, s.ph]}><Text style={{ fontSize: 30 }}>{BRAND.emoji[item.category_id] || '🍽️'}</Text></View>
+            <View style={s.thumb}><Text style={{ fontSize: 30 }}>{TENANT.icons[item.category_id] || '🍽️'}</Text></View>
             <View style={{ flex: 1 }}>
               <Text style={s.name}>{item.name}</Text>
               {item.tags.length > 0 && <Text style={s.tag}>{item.tags.join(' · ')}</Text>}
               {!!item.description && <Text style={s.muted} numberOfLines={2}>{item.description}</Text>}
               <Text style={s.price}>{item.variants.length > 1 ? 'od ' : ''}{zl(from)}</Text>
             </View>
-            <View style={s.plus}><Text style={s.plusTxt}>+</Text></View>
           </Pressable>
         );
       }} />
   );
 }
 
-function CartScreen({ onOrdered }) {
-  const { lines, dispatch, estimateMinor } = useCart();
-  const [mode, setMode] = useState('pickup');
-  const [f, setF] = useState({ name: '', phone: '', addr: '' });
+function CartScreen({ channel, setChannel, onOrdered, onBack }) {
+  const s = useS(); const t = useTheme(); const { lines, dispatch, estimateMinor } = useCart();
+  const { user } = useAuth();
+  const [f, setF] = useState({ name: pick(user, 'name', 'full_name') || '', phone: pick(user, 'phone') || '', addr: '' });
   const [quote, setQuote] = useState({ status: 'idle' });
   const [sending, setSending] = useState(false);
-
-  useEffect(() => { // wycena i walidacja po stronie CORE
+  const idem = useRef(null);
+  useEffect(() => { track('checkout_started'); }, []);
+  useEffect(() => {
+    idem.current = null; // zmiana koszyka = nowe zamówienie = nowy klucz idempotencji
     if (!lines.length) return setQuote({ status: 'idle' });
     setQuote({ status: 'loading' });
-    const t = setTimeout(() => validateCart(lines, mode)
+    const id = setTimeout(() => validateCart(lines, channel)
       .then((d) => setQuote({ status: 'ok', totalMinor: pick(d, 'total_minor', 'totals.total_minor', 'summary.total_minor') }))
       .catch((e) => setQuote({ status: 'error', message: e.message })), 400);
-    return () => clearTimeout(t);
-  }, [lines, mode]);
+    return () => clearTimeout(id);
+  }, [lines, channel]);
 
-  if (!lines.length) return <View style={s.center}><Text style={s.h2}>Koszyk jest pusty</Text><Text style={s.muted}>Wybierz coś z menu.</Text></View>;
+  const header = <Pressable onPress={onBack}><Text style={[s.muted, { padding: 16 }]}>‹ Wróć do menu</Text></Pressable>;
+  if (!lines.length) return <View style={{ flex: 1 }}>{header}<View style={s.center}><Text style={s.h2}>Koszyk jest pusty</Text></View></View>;
 
   const submit = async () => {
-    if (!f.name.trim() || f.phone.replace(/\D/g, '').length < 9 || (mode === 'delivery' && !f.addr.trim()))
-      return Alert.alert('Uzupełnij dane', 'Podaj imię, telefon' + (mode === 'delivery' ? ' i adres dostawy.' : '.'));
+    if (!f.name.trim() || f.phone.replace(/\D/g, '').length < 9 || (channel === 'delivery' && !f.addr.trim()))
+      return Alert.alert('Uzupełnij dane', 'Podaj imię, telefon' + (channel === 'delivery' ? ' i adres dostawy.' : '.'));
     setSending(true);
     try {
-      const o = await createOrder(lines, mode, { name: f.name.trim(), phone: f.phone.trim() }, f.addr.trim());
-      const token = pick(o, 'tracking_token', 'token', 'order.tracking_token');
+      idem.current = idem.current || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const o = await createOrder(lines, channel, { name: f.name.trim(), phone: f.phone.trim() }, f.addr.trim(), idem.current);
+      track('order_created');
       dispatch({ type: 'clear' });
-      onOrdered({ token, number: pick(o, 'order_number', 'number', 'order.order_number') });
-    } catch (e) { Alert.alert('Nie udało się złożyć zamówienia', e.message); }
+      onOrdered({ token: pick(o, 'tracking_token', 'token', 'order.tracking_token'), number: pick(o, 'order_number', 'number', 'order.order_number') });
+    } catch (e) { Alert.alert('Nie udało się złożyć zamówienia', e.message + '\n\nMożesz spróbować ponownie – nie utworzymy duplikatu.'); }
     setSending(false);
   };
-
+  const ch = [M.pickup && ['pickup', 'Odbiór'], M.delivery && ['delivery', 'Dostawa']].filter(Boolean);
   return (
-    <ScrollView contentContainerStyle={{ padding: 16 }} keyboardShouldPersistTaps="handled">
-      <Text style={s.h2}>Twoje zamówienie</Text>
-      {lines.map((l) => (
-        <View key={l.key} style={s.line}>
-          <View style={{ flex: 1 }}><Text style={s.name}>{l.name}</Text>{!!l.variantName && <Text style={s.muted}>{l.variantName}</Text>}</View>
-          <Stepper qty={l.qty} onChange={(q) => dispatch({ type: 'qty', key: l.key, qty: q })} />
-        </View>
-      ))}
-      <Text style={s.label}>Odbiór czy dostawa?</Text>
-      <View style={{ flexDirection: 'row', gap: 8 }}>
-        {[['pickup', 'Odbiór osobisty'], ['delivery', 'Dostawa']].map(([k, t]) => (
-          <Pressable key={k} onPress={() => setMode(k)} style={[s.chip, { flex: 1, alignItems: 'center' }, mode === k && s.chipOn]}><Text style={[s.chipTxt, mode === k && { color: C.bg }]}>{t}</Text></Pressable>
+    <ScrollView keyboardShouldPersistTaps="handled">
+      {header}
+      <View style={{ paddingHorizontal: 16 }}>
+        <Text style={s.h2}>Twoje zamówienie</Text>
+        {lines.map((l) => (
+          <View key={l.key} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderColor: t.colors.border }}>
+            <View style={{ flex: 1 }}><Text style={s.name}>{l.name}</Text>{!!(l.variantName || l.modNames.length) && <Text style={s.muted}>{[l.variantName, ...l.modNames].filter(Boolean).join(', ')}</Text>}</View>
+            <Stepper qty={l.qty} onChange={(q) => dispatch({ type: 'qty', key: l.key, qty: q })} />
+          </View>
         ))}
+        <Text style={s.label}>Realizacja</Text>
+        <View style={{ flexDirection: 'row', gap: 8 }}>{ch.map(([k, name]) => <CategoryChip key={k} label={name} on={channel === k} onPress={() => setChannel(k)} style={{ flex: 1, alignItems: 'center' }} />)}</View>
+        <TextInput style={s.input} placeholder="Imię" placeholderTextColor={t.colors.muted} value={f.name} onChangeText={(v) => setF({ ...f, name: v })} />
+        <TextInput style={s.input} placeholder="Telefon" placeholderTextColor={t.colors.muted} keyboardType="phone-pad" value={f.phone} onChangeText={(v) => setF({ ...f, phone: v })} />
+        {channel === 'delivery' && <TextInput style={s.input} placeholder="Adres dostawy" placeholderTextColor={t.colors.muted} value={f.addr} onChangeText={(v) => setF({ ...f, addr: v })} />}
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 }}>
+          <Text style={s.h2}>Razem</Text>
+          {quote.status === 'loading' ? <ActivityIndicator color={t.colors.primary} /> : <Text style={s.h2}>{quote.status === 'ok' && quote.totalMinor != null ? zl(quote.totalMinor) : `~ ${zl(estimateMinor)}`}</Text>}
+        </View>
+        <Text style={s.muted}>{quote.status === 'ok' ? 'Cena potwierdzona przez serwer.' : quote.status === 'error' ? quote.message : 'Ostateczną cenę, dostawę i rabaty wylicza serwer.'}</Text>
+        <Button title="Złóż zamówienie" onPress={submit} loading={sending} disabled={quote.status !== 'ok'} style={{ flex: 0, marginTop: 16, marginBottom: 32 }} />
       </View>
-      <TextInput style={s.input} placeholder="Imię" placeholderTextColor={C.muted} value={f.name} onChangeText={(v) => setF({ ...f, name: v })} />
-      <TextInput style={s.input} placeholder="Telefon" placeholderTextColor={C.muted} keyboardType="phone-pad" value={f.phone} onChangeText={(v) => setF({ ...f, phone: v })} />
-      {mode === 'delivery' && <TextInput style={s.input} placeholder="Adres dostawy" placeholderTextColor={C.muted} value={f.addr} onChangeText={(v) => setF({ ...f, addr: v })} />}
-      <View style={s.sum}>
-        <Text style={s.h2}>Razem</Text>
-        {quote.status === 'loading' ? <ActivityIndicator color={C.accent} /> : <Text style={s.h2}>{quote.status === 'ok' && quote.totalMinor != null ? zl(quote.totalMinor) : `~ ${zl(estimateMinor)}`}</Text>}
-      </View>
-      <Text style={s.muted}>{quote.status === 'ok' ? 'Cena potwierdzona przez serwer.' : quote.status === 'error' ? quote.message : 'Ostateczną cenę wylicza serwer.'}</Text>
-      <Pressable style={[s.cta, { marginTop: 16 }, (quote.status !== 'ok' || sending) && { opacity: 0.4 }]} disabled={quote.status !== 'ok' || sending} onPress={submit}>
-        {sending ? <ActivityIndicator color={C.bg} /> : <Text style={s.ctaTxt}>Złóż zamówienie</Text>}
-      </Pressable>
     </ScrollView>
   );
 }
 
-function StatusScreen({ order }) {
-  const [st, setSt] = useState(null);
-  const [err, setErr] = useState(null);
+function OrdersScreen({ order }) {
+  const s = useS(); const [st, setSt] = useState(null); const [err, setErr] = useState(null);
   useEffect(() => {
     if (!order || !order.token) return;
     let alive = true;
-    const poll = () => trackOrder(order.token).then((d) => alive && (setSt(pick(d, 'status', 'order.status') || '—'), setErr(null))).catch((e) => alive && setErr(e.message));
-    poll();
-    const id = setInterval(poll, 15000);
+    const poll = () => trackOrder(order.token).then((d) => alive && (setSt(pick(d, 'status', 'order.status') || null), setErr(null))).catch((e) => alive && setErr(e.message));
+    poll(); const id = setInterval(poll, 15000);
     return () => { alive = false; clearInterval(id); };
   }, [order]);
   if (!order) return <View style={s.center}><Text style={s.h2}>Brak aktywnego zamówienia</Text><Text style={s.muted}>Po złożeniu zamówienia zobaczysz tu jego status.</Text></View>;
   return (
-    <View style={s.center}>
-      <Text style={s.muted}>Zamówienie {order.number ? `nr ${order.number}` : ''}</Text>
-      <Text style={[s.heroTitle, { fontSize: 44, color: C.accent }]}>{st || '…'}</Text>
-      {!!err && <Text style={[s.muted, { textAlign: 'center', marginHorizontal: 24 }]}>{err}</Text>}
+    <ScrollView contentContainerStyle={{ padding: 16 }}>
+      <Text style={s.h2}>Zamówienie {order.number ? `nr ${order.number}` : ''}</Text>
       {!order.token && <Text style={s.muted}>Serwer nie zwrócił tokenu śledzenia.</Text>}
-    </View>
+      {!!err && <Text style={s.muted}>{err}</Text>}
+      <View style={{ marginTop: 16 }}>{st ? <StatusTimeline status={st} /> : <ActivityIndicator />}</View>
+    </ScrollView>
+  );
+}
+
+function AccountScreen() {
+  const s = useS(); const { status, user, signOut } = useAuth(); const consent = useConsent(); const [view, setView] = useState('main');
+  if (view === 'auth') return <AuthForm onDone={() => setView('main')} onBack={() => setView('main')} />;
+  return (
+    <ScrollView contentContainerStyle={{ padding: 16, gap: 8 }}>
+      <Text style={s.h2}>Konto</Text>
+      {status === 'authed' ? (
+        <>
+          <Text style={s.name}>{pick(user, 'name', 'full_name') || 'Zalogowany'}</Text>
+          <Text style={s.muted}>{pick(user, 'email')}</Text>
+          <Text style={s.muted}>Historia zamówień, adresy i ulubione: TODO INTEGRATION.</Text>
+          <Button title="Wyloguj" ghost onPress={signOut} style={{ flex: 0, marginTop: 12 }} />
+        </>
+      ) : (
+        <>
+          <Text style={s.muted}>Zamawiasz jako gość. Konto zapamięta Twoje dane przy kolejnych zamówieniach.</Text>
+          <Button title="Zaloguj się lub załóż konto" onPress={() => setView('auth')} style={{ flex: 0, marginTop: 12 }} />
+        </>
+      )}
+      <Text style={[s.label, { marginTop: 24 }]}>Prywatność</Text>
+      <Button title="Zgody i ciasteczka" ghost onPress={consent.reopen} style={{ flex: 0 }} />
+      <Text style={[s.name, { marginTop: 24 }]}>{TENANT.name}</Text>
+      <Text style={s.muted}>{TENANT.address}</Text>
+      <Button title={`Zadzwoń: ${TENANT.phone}`} ghost onPress={() => Linking.openURL(`tel:${TENANT.phone}`)} style={{ flex: 0, marginTop: 8 }} />
+    </ScrollView>
   );
 }
 
 function Shell() {
-  const insets = useSafeAreaInsets();
-  const { count } = useCart();
-  const [tab, setTab] = useState('menu');
+  const s = useS(); const insets = useSafeAreaInsets(); const t = useTheme(); const { count, estimateMinor } = useCart();
+  const [tab, setTab] = useState('home');
+  const [channel, setChannel] = useState(M.pickup ? 'pickup' : 'delivery');
   const [picked, setPicked] = useState(null);
   const [order, setOrder] = useState(null);
+  useEffect(() => track('app_open'), []);
+  const tabs = [['home', '🏠', 'Start'], ['menu', '🍔', 'Menu'], ['orders', '🧾', 'Zamówienia'], M.loyalty && ['rewards', '⭐', 'Nagrody'], ['account', '👤', 'Konto']].filter(Boolean);
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
-      <StatusBar barStyle="light-content" />
-      <View style={s.top}><Image source={{ uri: BRAND.logo }} style={s.logo} resizeMode="contain" /><Text style={s.muted}>{BRAND.city}</Text></View>
+      <StatusBar barStyle={t.statusBar} />
       <View style={{ flex: 1 }}>
+        {tab === 'home' && <HomeScreen go={setTab} setChannel={setChannel} />}
         {tab === 'menu' && <MenuScreen onPick={setPicked} />}
-        {tab === 'cart' && <CartScreen onOrdered={(o) => { setOrder(o); setTab('status'); }} />}
-        {tab === 'status' && <StatusScreen order={order} />}
+        {tab === 'cart' && <CartScreen channel={channel} setChannel={setChannel} onBack={() => setTab('menu')} onOrdered={(o) => { setOrder(o); setTab('orders'); }} />}
+        {tab === 'orders' && <OrdersScreen order={order} />}
+        {tab === 'account' && <AccountScreen />}
       </View>
-      <View style={[s.tabs, { paddingBottom: insets.bottom + 8 }]}>
-        {[['menu', '🍔', 'Menu'], ['cart', '🛒', count ? `Koszyk (${count})` : 'Koszyk'], ['status', '🧾', 'Status']].map(([k, i, t]) => (
-          <Pressable key={k} style={s.tab} onPress={() => setTab(k)}><Text style={{ fontSize: 20, opacity: tab === k ? 1 : 0.5 }}>{i}</Text><Text style={[s.tabTxt, tab === k && { color: C.accent }]}>{t}</Text></Pressable>
-        ))}
-      </View>
+      {count > 0 && tab !== 'cart' && (
+        <Pressable onPress={() => setTab('cart')} style={{ position: 'absolute', left: 16, right: 16, bottom: insets.bottom + 72, backgroundColor: t.colors.primary, borderRadius: t.radius.md, padding: 14, flexDirection: 'row', justifyContent: 'space-between' }}>
+          <Text style={s.btnTxt}>Koszyk ({count})</Text><Text style={s.btnTxt}>~ {zl(estimateMinor)}</Text>
+        </Pressable>
+      )}
+      <BottomNav tabs={tabs} active={tab} onChange={setTab} bottomInset={insets.bottom} />
+      <ConsentSheet />
       {picked && <ProductSheet key={picked.id} product={picked} onClose={() => setPicked(null)} />}
     </View>
   );
 }
 
 export default function App() {
-  const [ok] = useFonts({ Anton_400Regular });
+  const [ok] = useFonts(TENANT.fonts);
   if (!ok) return null;
-  return <SafeAreaProvider><CartProvider><Shell /></CartProvider></SafeAreaProvider>;
+  return <SafeAreaProvider><ThemeProvider><ConsentProvider><AuthProvider><CartProvider><Shell /></CartProvider></AuthProvider></ConsentProvider></ThemeProvider></SafeAreaProvider>;
 }
-
-const s = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.bg }, center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6 },
-  top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, height: 52, borderBottomWidth: 1, borderColor: C.line },
-  logo: { width: 110, height: 36 },
-  hero: { margin: 16, borderRadius: 20, overflow: 'hidden', padding: 20, minHeight: 170, justifyContent: 'flex-end', backgroundColor: C.card },
-  heroShade: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(22,17,14,0.55)' },
-  heroSub: { color: C.accent, fontSize: 14, fontWeight: '600' }, heroTitle: { color: C.text, fontFamily: H, fontSize: 56, lineHeight: 62 },
-  chips: { paddingHorizontal: 16, gap: 8, paddingBottom: 8 },
-  chip: { paddingVertical: 9, paddingHorizontal: 16, borderRadius: 99, borderWidth: 1, borderColor: C.line },
-  chipOn: { backgroundColor: C.accent, borderColor: C.accent }, chipTxt: { color: C.text, fontWeight: '600' },
-  card: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginTop: 10, padding: 10, borderRadius: 16, backgroundColor: C.card },
-  thumb: { width: 64, height: 64, borderRadius: 12 }, ph: { backgroundColor: C.line, alignItems: 'center', justifyContent: 'center' },
-  tag: { color: C.hot, fontWeight: '700', fontSize: 12 }, name: { color: C.text, fontSize: 17, fontWeight: '700' }, muted: { color: C.muted, fontSize: 13, marginTop: 2 },
-  price: { color: C.accent, fontFamily: H, fontSize: 20, marginTop: 4 },
-  plus: { width: 36, height: 36, borderRadius: 18, backgroundColor: C.hot, alignItems: 'center', justifyContent: 'center' }, plusTxt: { color: '#fff', fontSize: 22, marginTop: -2 },
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)' },
-  sheet: { backgroundColor: C.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 16 }, sheetBar: { flexDirection: 'row', gap: 12, alignItems: 'center', paddingTop: 16 },
-  h2: { color: C.text, fontFamily: H, fontSize: 26, marginTop: 4 }, label: { color: C.text, fontWeight: '700', marginTop: 16, marginBottom: 6 },
-  opt: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, marginBottom: 6, borderRadius: 12, borderWidth: 1, borderColor: C.line },
-  dot: { width: 14, height: 14, borderRadius: 7, borderWidth: 1, borderColor: C.muted }, optTxt: { flex: 1, color: C.text, fontSize: 15 },
-  qty: { flexDirection: 'row', alignItems: 'center', gap: 10 }, qBtn: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, borderColor: C.line, alignItems: 'center', justifyContent: 'center' },
-  qTxt: { color: C.text, fontSize: 20 }, qNum: { color: C.text, fontSize: 16, minWidth: 18, textAlign: 'center' },
-  cta: { flex: 1, backgroundColor: C.accent, borderRadius: 14, paddingVertical: 15, alignItems: 'center' }, ctaTxt: { color: C.bg, fontWeight: '800', fontSize: 16 },
-  line: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderColor: C.line },
-  input: { marginTop: 10, padding: 14, borderRadius: 12, backgroundColor: C.card, color: C.text, fontSize: 15 },
-  sum: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 },
-  tabs: { flexDirection: 'row', borderTopWidth: 1, borderColor: C.line, backgroundColor: C.card, paddingTop: 8 },
-  tab: { flex: 1, alignItems: 'center', gap: 2 }, tabTxt: { color: C.muted, fontSize: 12, fontWeight: '600' },
-});
